@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  THREE BARS, NOT FIVE.
+
+  app-icon.md §2 gives the numbers: a 108 viewport, a 72 mask, and a 42 SYMBOL BOX centred, so
+  everything drawn lives between 33 and 75 on both axes. These three bars occupy exactly 33..75
+  horizontally (8 wide, 9 apart) and 33..75 vertically, so the bounding box is 42 and 42/72 = 0.583,
+  inside the 0.55-0.60 that every well-drawn icon lands in.
+
+  The app has five channels and the icon has three bars on purpose. §4: a 2x2 grid of tiles was
+  tried for GROQ_EXPLORER and abandoned because at 48 px four shapes are four grey smudges. Five
+  one-pixel-ish bars at launcher size is a smear. Three says meter and survives 48 px.
+
+  Gold #E8B15C on the near-black ground is 9.38:1. §5: anything under 3 is not a pairing, it is a
+  mistake that has not happened yet.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#E8B15C"
+        android:pathData="M33,57 L41,57 L41,75 L33,75 Z" />
+    <path
+        android:fillColor="#E8B15C"
+        android:pathData="M50,33 L58,33 L58,75 L50,75 Z" />
+    <path
+        android:fillColor="#E8B15C"
+        android:pathData="M67,45 L75,45 L75,75 L67,75 Z" />
+</vector>

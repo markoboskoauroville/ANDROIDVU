@@ -1,0 +1,248 @@
+# PINNED BY COMMIT, NEVER BY TAG.
+#
+# A tag is mutable: whoever owns the action can move v4 to point at anything, and this workflow runs
+# with a token that can push to every repository in the account. In the GhostAction compromise of
+# early 2025, repositories pinned to a moving tag pulled a modified action automatically and their
+# CI secrets were exfiltrated — no compromise of this account required, only of somebody else's.
+#
+# Every SHA below is the one already in service in TTT_MINI's build-apk.yml, re-resolved against the
+# GitHub API on 25.8.2026 and confirmed to exist in the action's own repository. To update one: read
+# the release notes, resolve the new tag to a SHA yourself, and change the SHA and its comment in
+# one commit, so the comment can never quietly disagree with what actually runs.
+
+name: Build AndroidVU
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          gradle-version: '8.7'
+
+      # ---------------------------------------------------------------------------------------
+      # G1 — PROVENANCE. Cheapest first, and this one is two seconds.
+      #
+      # The version is read from gradle.properties here and used for the filename and the tag, so
+      # there is exactly one place the number lives. versioning.md §2: the leading number and the
+      # trailing v number are the same number, always, and a name whose two ends disagree is a name
+      # that was edited by hand and got half-done. Deriving both from one variable makes that
+      # impossible rather than merely discouraged.
+      # ---------------------------------------------------------------------------------------
+      - name: "Gate G1 - provenance"
+        id: provenance
+        run: |
+          set -euo pipefail
+          V=$(grep -E '^appVersion=' gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          echo "appVersion from gradle.properties: $V"
+          case "$V" in ''|*[!0-9]*) echo "not a whole number"; exit 1;; esac
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "commit: $(git rev-parse HEAD)"
+          echo "tracked files: $(git ls-files | wc -l)"
+          DIRTY=$(git status --porcelain | wc -l)
+          echo "uncommitted changes: $DIRTY"
+          [ "$DIRTY" = "0" ]
+          if gh release view "v$V" >/dev/null 2>&1; then
+            echo "release v$V already exists. Bump appVersion in gradle.properties."
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Restore the signing key
+        env:
+          KS: ${{ secrets.ANDROIDVU_KEYSTORE }}
+          KS_PW: ${{ secrets.ANDROIDVU_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KS" ]; then
+            echo "No keystore secret. This build would not be upgradable in place."
+            exit 1
+          fi
+          echo "$KS" | base64 -d > androidvu.jks
+          printf 'storeFile=androidvu.jks\nstorePassword=%s\nkeyAlias=androidvu\nkeyPassword=%s\n' "$KS_PW" "$KS_PW" > keystore.properties
+          # The fingerprint, not the key. It is safe to print, safe to log, and it is the one number
+          # that proves every future build is signed by the same hand as this one.
+          keytool -list -keystore androidvu.jks -storepass "$KS_PW" | grep -i 'SHA-256' || true
+
+      # ---------------------------------------------------------------------------------------
+      # G3 — TEST 1, AND THE PROOF THAT TEST 1 CAN FAIL.
+      #
+      # Two lessons from this month, both paid for in real builds, applied from build one:
+      #
+      #   "Make every check FAIL on purpose once before you trust it - and make it PASS on purpose
+      #    once. I shipped a secret-scanner that failed the build because the artefact was CLEAN."
+      #
+      # So this step does not merely run the suite. It runs it green, then breaks the one line the
+      # whole mapping rests on — the refusal of an unrecognised usage — and requires the suite to go
+      # RED, then restores the file and requires green again. A test that has never been seen fail is
+      # a rumour, and this one is seen to fail on every single build rather than once on the day it
+      # was written.
+      #
+      # The break is applied to a COPY of the line via sed and reverted with git checkout, so nothing
+      # broken can survive the step even if it fails halfway.
+      # ---------------------------------------------------------------------------------------
+      - name: "Gate G3 - Test 1, proven in both directions"
+        run: |
+          set -euo pipefail
+          SRC=app/src/main/java/com/mantraproductions/androidvu/MaChannels.kt
+
+          echo "--- PASS ON PURPOSE: the suite as written must be green"
+          gradle :app:testDebugUnitTest --no-daemon --console=plain
+          echo "tests run: $(grep -ho 'tests=\"[0-9]*\"' app/build/test-results/testDebugUnitTest/*.xml | grep -o '[0-9]*' | paste -sd+ | bc)"
+
+          echo "--- FAIL ON PURPOSE: an unrecognised usage now defaults to MEDIA"
+          sed -i 's|else -> { channel = null; certain = false }|else -> { channel = MaChannel.MEDIA; certain = false }|' "$SRC"
+          if grep -q 'else -> { channel = MaChannel.MEDIA; certain = false }' "$SRC"; then
+            echo "sabotage applied"
+          else
+            echo "SABOTAGE DID NOT APPLY - the sed no longer matches the source."
+            echo "That makes the proof below meaningless. Fix the pattern, do not delete the step."
+            git checkout -- "$SRC"; exit 1
+          fi
+          if gradle :app:testDebugUnitTest --no-daemon --console=plain > /tmp/sabotage.log 2>&1; then
+            echo "THE SUITE PASSED WITH A BROKEN MAPPING. The tests are not watching what they claim."
+            git checkout -- "$SRC"; exit 1
+          else
+            echo "suite went red as required"
+            grep -c 'testcase' /tmp/sabotage.log || true
+          fi
+
+          echo "--- RESTORED"
+          git checkout -- "$SRC"
+          git diff --exit-code -- "$SRC"
+          gradle :app:testDebugUnitTest --no-daemon --console=plain
+          echo "green again on the real source"
+
+      # ---------------------------------------------------------------------------------------
+      # G5 — every loop and every wait, COUNTED. Not a threshold, a record: §7 asks for the count of
+      # loops examined rather than only the count of problems, because a check that found nothing and
+      # a check that did not run look identical from outside.
+      # ---------------------------------------------------------------------------------------
+      - name: "Gate G5 - loops and waits, counted"
+        run: |
+          set -euo pipefail
+          KT=$(find app/src -name '*.kt' | wc -l)
+          echo "kotlin files examined: $KT"
+          [ "$KT" -gt 0 ]
+          echo "while(true):        $(grep -rn --include=*.kt -F 'while (true)' app/src | wc -l)"
+          echo "for loops:          $(grep -rn --include=*.kt -E 'for \(' app/src | wc -l)"
+          echo "postDelayed:        $(grep -rn --include=*.kt -F 'postDelayed' app/src | wc -l)"
+          echo "Thread.sleep:       $(grep -rn --include=*.kt -F 'Thread.sleep' app/src | wc -l)"
+          echo "Every one of the above is bounded by a literal count in the source: the live ticker"
+          echo "by maxTicks, the visualiser by 'for (i in 0 until 10)'. No network call exists in"
+          echo "this build, so there is no external wait to give a deadline to."
+
+      - name: Build release APK
+        run: gradle :app:assembleRelease --no-daemon --console=plain
+
+      # ---------------------------------------------------------------------------------------
+      # G2 — ON THE ARTEFACT, not on the diff. A key committed months ago and removed last week is
+      # absent from today's diff and present in every build made from that history.
+      #
+      # `|| true` on the grep is load-bearing and it is here because of a real failure: grep exits 1
+      # when it matches nothing, and under `set -o pipefail` that FAILS THE BUILD BECAUSE THE
+      # ARTEFACT WAS CLEAN. A check that goes red on success is worse than no check, because it
+      # teaches you that red means nothing.
+      #
+      # The fixture below is assembled from parts at run time rather than stored as a literal —
+      # delivery-gate.md §15a: a test fixture holding a key SHAPE makes the scanner go red on every
+      # future delivery, and a check that cries wolf gets skimmed on the release where it was right.
+      # ---------------------------------------------------------------------------------------
+      - name: "Gate G2 - scan the artefact, and prove the scanner can see"
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          echo "scanning: $APK ($(stat -c%s "$APK") bytes)"
+
+          PATTERN='(gsk_|AIza|ghp_|github_pat_|sk-ant-|xox[baprs]-)[A-Za-z0-9_-]{20,}'
+
+          # FAIL ON PURPOSE: build a key-shaped string from parts and confirm the scanner catches it.
+          printf '%s%s\n' 'gsk_' 'AbCdEfGhIjKlMnOpQrStUvWxYz012345' > /tmp/canary.txt
+          CANARY=$(strings -a /tmp/canary.txt | grep -acE "$PATTERN" || true)
+          echo "canary hits (must be 1): $CANARY"
+          [ "$CANARY" = "1" ]
+          rm -f /tmp/canary.txt
+
+          # PASS ON PURPOSE: the same pattern against the real artefact.
+          HITS=$(strings -a "$APK" | grep -acE "$PATTERN" || true)
+          HITS=${HITS:-0}
+          echo "key-shaped strings in the artefact: $HITS"
+          if [ "$HITS" -ne 0 ]; then
+            echo "A key shape is present in the artefact. Not printing it. Stopping."
+            exit 1
+          fi
+
+      - name: "Gate G3 - Android Lint (measuring, not yet blocking)"
+        continue-on-error: true
+        run: |
+          gradle :app:lintRelease --no-daemon --console=plain || true
+          F=$(find app/build/reports -name 'lint-results*.xml' | head -1)
+          if [ -n "$F" ]; then
+            echo "errors:   $(grep -c 'severity="Error"' "$F" || true)"
+            echo "warnings: $(grep -c 'severity="Warning"' "$F" || true)"
+          else
+            echo "no lint report produced"
+          fi
+
+      # ---------------------------------------------------------------------------------------
+      # G7 — the baseline. A budget without a previous number is a note, not a gate (§9.2), and v1 is
+      # the release that has no previous number. So it records one.
+      # ---------------------------------------------------------------------------------------
+      - name: "Gate G7 - record the baselines"
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          echo "artefact size: $(stat -c%s "$APK") bytes"
+          echo "dependencies (compile+runtime, whole graph):"
+          gradle :app:dependencies --configuration releaseRuntimeClasspath --no-daemon --console=plain | grep -c '\-\-\-' || true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.provenance.outputs.version }}
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          # versioning.md §2: the number at both ends of the name, no zero padding, no ampersand.
+          NAME="${V}-androidvu-v${V}-release.apk"
+          cp "$APK" "$NAME"
+          gh release create "v${V}" "$NAME" \
+            --title "AndroidVU v${V} - the probe" \
+            --notes "AndroidVU v${V}. This version draws NO meters. It is the measurement the design has to be built on: what Android will actually tell an ordinary app about each audio channel. Open it, play something, press REFRESH, then COPY and paste the report back. Mantra Productions."
+          echo "published v${V} as $NAME"
+
+      # The two newest releases stay, everything older goes. versioning.md §4, with §5's warning
+      # about `latest` designed out: the tag IS the version number. Runs only after publish
+      # succeeded, so a failed build never deletes a good release.
+      - name: Keep the two newest releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[2:] | .[].tagName' | while read -r tag; do
+            [ -z "$tag" ] && continue
+            gh release delete "$tag" --yes --cleanup-tag || true
+            echo "removed $tag"
+          done

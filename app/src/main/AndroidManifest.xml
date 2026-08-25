@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      ONE PERMISSION, AND IT IS OPTIONAL.
+
+      RECORD_AUDIO is here for the Visualizer measurement and nothing else. It is requested at the
+      moment the VISUALIZER button is pressed, never at launch, so the app is fully usable without
+      ever granting it and the report simply says "not run".
+
+      What is NOT here, deliberately: SYSTEM_ALERT_WINDOW. v1 draws no overlay and asks for nothing
+      it does not use. delivery-gate.md §12 puts a new permission in the middle band — blocks unless
+      written down and accepted — so the overlay permission arrives in the version that first draws
+      a line, with its own record.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -1,0 +1,13 @@
+# Never a key, and never the vault, whatever else changes here. secrets.md §3.
+.secret/
+*.jks
+*.keystore
+keystore.properties
+local.properties
+
+.gradle/
+build/
+app/build/
+.idea/
+*.iml
+.DS_Store
